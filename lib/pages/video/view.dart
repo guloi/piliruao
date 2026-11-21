@@ -261,7 +261,10 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         // 没刷出新视频时把入栈的当前视频退回去，免得「下滑」回到的是自己
         service.pop();
         if (showToast) {
-          SmartDialog.showToast('没有更多推荐视频了');
+          // 池子里还有候选就说明只是这一轮没试完，再滑一次接着找
+          SmartDialog.showToast(
+            service.hasPending ? '正在找竖屏视频，再滑一次试试' : '没有更多推荐视频了',
+          );
         }
         return false;
       }

@@ -1,4 +1,5 @@
 import 'package:PiliPlus/pages/setting/widgets/switch_item.dart';
+import 'package:PiliPlus/services/portrait_feed_service.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
 import 'package:material_ui/material_ui.dart';
@@ -27,6 +28,13 @@ Future<void> portraitSlideDialog(BuildContext context) async {
                   leading: Icon(Icons.swipe_up_outlined),
                   title: Text('竖屏视频全屏播放时'),
                   subtitle: Text('上滑播放推荐的竖屏视频，下滑回到上一个视频，播完自动上滑'),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 6),
+                  child: Text(
+                    PortraitFeedService.instance.stats.summary,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 ),
                 SetSwitchItem(
                   title: '使用首页推荐',

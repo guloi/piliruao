@@ -39,6 +39,50 @@ class PortraitFeedItem {
   bool get isVertical => vertical ?? (dimension?.isVertical == true);
 }
 
+/// 取流统计：设置页会把最近一次的结果显示出来，方便看清到底是「推荐池里
+/// 本来就没有竖屏」还是「尺寸探测没成功」才刷不出视频
+class PortraitFeedStats {
+  /// App 端推荐池返回多少条、其中判为竖屏多少条
+  int appItems = 0;
+  int appVerticals = 0;
+
+  /// Web 端推荐池
+  int webItems = 0;
+  int webVerticals = 0;
+
+  /// 当前视频的相关推荐
+  int relatedItems = 0;
+  int relatedVerticals = 0;
+
+  /// pagelist 探测次数与失败次数（失败大多是网络/风控，不是真的横屏）
+  int probes = 0;
+  int probeFailed = 0;
+
+  /// 最近一次取流有没有找到东西、有没有用过「刷新推荐」这招兜底
+  bool found = false;
+  bool refreshed = false;
+
+  void reset() {
+    appItems = 0;
+    appVerticals = 0;
+    webItems = 0;
+    webVerticals = 0;
+    relatedItems = 0;
+    relatedVerticals = 0;
+    probes = 0;
+    probeFailed = 0;
+    found = false;
+    refreshed = false;
+  }
+
+  String get summary => '上次取流：App ${appItems}条/竖屏$appVerticals'
+      '，Web ${webItems}条/竖屏$webVerticals'
+      '，相关 ${relatedItems}条/竖屏$relatedVerticals'
+      '，探测 $probes 条（失败 $probeFailed）'
+      '${refreshed ? '，刷过推荐' : ''}'
+      '${found ? '' : '，没找到竖屏'}';
+}
+
 /// 竖屏即刷的取流：
 ///
 /// 官方 App 的首页推荐条目自带「竖屏」标记（rcmd_reason）和 uri 上的
@@ -80,6 +124,9 @@ class PortraitFeedService {
   /// 开启「随机视频」后从候选池里随机取，而不是按推荐顺序依次取
   final Random _random = Random();
 
+  /// 最近一次取流的统计（设置页会显示）
+  final PortraitFeedStats stats = PortraitFeedStats();
+
   String? _cursor;
 
   /// App 端推荐池的 idx（官方首页推荐，条目自带竖屏标记）
@@ -103,6 +150,9 @@ class PortraitFeedService {
   int get historyLength => _history.length;
 
   bool get canGoPrevious => _history.isNotEmpty;
+
+  /// 候选池里还有没试完的东西（此时刷不出只是这一轮没找到，不算真的没货）
+  bool get hasPending => _queue.isNotEmpty;
 
   void visit(String bvid) {
     if (_cursor == bvid) {
@@ -220,14 +270,23 @@ class PortraitFeedService {
     final Stopwatch stopwatch = Stopwatch()..start();
     int probes = 0;
     int pages = 0;
+    bool refreshed = false;
     // 关掉「使用首页推荐」时先用当前视频的相关推荐，用完后自动接首页推荐
     bool relatedFirst = !Pref.portraitRC;
     bool relatedUsed = !Pref.portraitRC;
+    stats.reset();
+
+    void done(bool found) {
+      stats
+        ..probes = probes
+        ..found = found;
+    }
 
     while (true) {
       // 池子里已经确认竖屏的，直接给，不用等网络
       final vertical = _takeVertical(currentBvid);
       if (vertical != null) {
+        done(true);
         return vertical;
       }
 
@@ -240,16 +299,30 @@ class PortraitFeedService {
           probes += batch.length;
           final hit = await _probe(batch);
           if (hit != null) {
+            done(true);
             return hit;
           }
           continue;
         }
       } else {
         // 探测名额用完：池子里还有候选就留给下次上滑，别急着喊「没有更多」
+        done(false);
         return null;
       }
 
       if (pages >= maxPages) {
+        // 分页走到底还是一条竖屏都没找着：把推荐流刷一遍（官方客户端
+        // 下拉刷新后又是一批新的），别直接说「没有更多」
+        if (!refreshed) {
+          refreshed = true;
+          stats.refreshed = true;
+          pages = 0;
+          _appIdx = 0;
+          _webIdx = 0;
+          await _fillHomeRcmd();
+          continue;
+        }
+        done(false);
         return null;
       }
       pages++;
@@ -259,13 +332,16 @@ class PortraitFeedService {
         continue;
       }
       final int added = await _fillHomeRcmd();
-      // 首页推荐拿不到东西（未登录被拦、风控等）就退回相关推荐
-      if (added == 0 && !relatedUsed) {
+      // 首页池里没有竖屏（或者压根拿不到东西）时，顺手问问当前视频的相关
+      // 推荐：同一个 UP / 同一类内容的竖屏比例高得多
+      if ((added == 0 || !_hasVertical()) && !relatedUsed) {
         relatedUsed = true;
         await _fillRelated(currentBvid);
       }
     }
   }
+
+  bool _hasVertical() => _queue.any((e) => e.isVertical);
 
   /// 清掉不能用的候选：当前视频、历史里播过的、已确认横屏的、拉黑过的
   void _purge(String currentBvid) {
@@ -306,13 +382,9 @@ class PortraitFeedService {
       return const <PortraitFeedItem>[];
     }
     final List<PortraitFeedItem> candidates = [..._queue];
-    if (Pref.portraitRandom) {
-      candidates.shuffle(_random);
-    } else {
-      candidates.sort(
-        (a, b) => _probePriority(a).compareTo(_probePriority(b)),
-      );
-    }
+    // 探测顺序按「像竖屏」程度排（短的先探），命中率比乱序高很多；
+    // 随机只体现在最终选哪一条竖屏视频上
+    candidates.sort((a, b) => _probePriority(a).compareTo(_probePriority(b)));
     final List<PortraitFeedItem> taken =
         candidates.take(min(max, candidates.length)).toList();
     _queue.removeWhere(taken.contains);
@@ -359,6 +431,7 @@ class PortraitFeedService {
       } else {
         // 网络/风控失败：不是横屏，留着下次再试
         item.probeFails++;
+        stats.probeFailed++;
         _queue.add(item);
       }
     }
@@ -443,25 +516,31 @@ class PortraitFeedService {
       final res = await VideoHttp.rcmdVideoListApp(freshIdx: _appIdx);
       if (res case Success(:final response)) {
         _appIdx++;
+        int verticals = 0;
         for (final e in response) {
           if (e.goto != 'av') {
             continue;
           }
-          if (_add(
-            PortraitFeedItem(
-              bvid: e.bvid ?? '',
-              cid: e.cid,
-              aid: e.aid,
-              cover: e.cover,
-              title: e.title,
-              duration: e.duration,
-              dimension: _dimensionFromUri(e.uri),
-              vertical: e.portrait ? true : null,
-            ),
-          )) {
+          final item = PortraitFeedItem(
+            bvid: e.bvid ?? '',
+            cid: e.cid,
+            aid: e.aid,
+            cover: e.cover,
+            title: e.title,
+            duration: e.duration,
+            dimension: _dimensionFromUri(e.uri),
+            vertical: e.portrait ? true : null,
+          );
+          if (item.isVertical) {
+            verticals++;
+          }
+          if (_add(item)) {
             added++;
           }
         }
+        stats
+          ..appItems += response.length
+          ..appVerticals += verticals;
       }
     } catch (_) {}
     return added;
@@ -473,21 +552,27 @@ class PortraitFeedService {
       final res = await VideoHttp.rcmdVideoList(ps: 20, freshIdx: _webIdx);
       if (res case Success(:final response)) {
         _webIdx++;
+        int verticals = 0;
         for (final e in response) {
-          if (_add(
-            PortraitFeedItem(
-              bvid: e.bvid ?? '',
-              cid: e.cid,
-              aid: e.aid,
-              cover: e.cover,
-              title: e.title,
-              duration: e.duration,
-              dimension: e.dimension,
-            ),
-          )) {
+          final item = PortraitFeedItem(
+            bvid: e.bvid ?? '',
+            cid: e.cid,
+            aid: e.aid,
+            cover: e.cover,
+            title: e.title,
+            duration: e.duration,
+            dimension: e.dimension,
+          );
+          if (item.isVertical) {
+            verticals++;
+          }
+          if (_add(item)) {
             added++;
           }
         }
+        stats
+          ..webItems += response.length
+          ..webVerticals += verticals;
       }
     } catch (_) {}
     return added;
@@ -533,6 +618,7 @@ class PortraitFeedService {
     try {
       final res = await VideoHttp.relatedVideoList(bvid: bvid);
       if (res case Success(:final response)) {
+        int verticals = 0;
         for (final HotVideoItemModel e
             in response ?? const <HotVideoItemModel>[]) {
           if (e.isLive == true || e.isPugv == true) {
@@ -541,20 +627,25 @@ class PortraitFeedService {
           if (e.redirectUrl?.isNotEmpty == true) {
             continue;
           }
-          if (_add(
-            PortraitFeedItem(
-              bvid: e.bvid ?? '',
-              cid: e.cid,
-              aid: e.aid,
-              cover: e.cover,
-              title: e.title,
-              duration: e.duration,
-              dimension: e.dimension,
-            ),
-          )) {
+          final item = PortraitFeedItem(
+            bvid: e.bvid ?? '',
+            cid: e.cid,
+            aid: e.aid,
+            cover: e.cover,
+            title: e.title,
+            duration: e.duration,
+            dimension: e.dimension,
+          );
+          if (item.isVertical) {
+            verticals++;
+          }
+          if (_add(item)) {
             added++;
           }
         }
+        stats
+          ..relatedItems += response?.length ?? 0
+          ..relatedVerticals += verticals;
       }
     } catch (_) {}
     return added;
