@@ -95,7 +95,13 @@ abstract final class VideoHttp {
       for (final i in res.data['data']['item']) {
         //过滤掉live与ad，以及拉黑用户
         if (_filterWebRcmd(i)) continue;
-        final videoItem = RcmdVideoItemModel.fromJson(i);
+        final RcmdVideoItemModel videoItem;
+        try {
+          videoItem = RcmdVideoItemModel.fromJson(i);
+        } catch (_) {
+          // 同上：单条解析失败就跳过，不要整页都拿不到
+          continue;
+        }
         if (!RecommendFilter.filterWithExempt(videoItem)) {
           list.add(videoItem);
         }
@@ -199,7 +205,14 @@ abstract final class VideoHttp {
       final list = <RcmdVideoItemAppModel>[];
       for (final i in res.data['data']['items']) {
         if (_filterAppRcmd(i)) continue;
-        final videoItem = RcmdVideoItemAppModel.fromJson(i);
+        final RcmdVideoItemAppModel videoItem;
+        try {
+          videoItem = RcmdVideoItemAppModel.fromJson(i);
+        } catch (_) {
+          // 个别卡片（例如缺 param 的竖屏卡片）可能解析不了，跳过就好，
+          // 不能让一条坏数据连累整页推荐
+          continue;
+        }
         if (!RecommendFilter.filterWithExempt(videoItem)) {
           list.add(videoItem);
         }
