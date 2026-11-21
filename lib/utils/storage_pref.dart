@@ -1903,14 +1903,14 @@ abstract final class Pref {
 
   static bool get portraitRC =>
       _setting.get(SettingBoxKey.portraitRC,
-          defaultValue:false);
+          defaultValue:true);
 
   static set portraitRC(bool value) =>
       _setting.put(SettingBoxKey.portraitRC, value);
 
   static bool get portraitNewv =>
       _setting.get(SettingBoxKey.portraitNewv,
-          defaultValue:false);
+          defaultValue:true);
 
   static set portraitNewv(bool value) =>
       _setting.put(SettingBoxKey.portraitNewv, value);

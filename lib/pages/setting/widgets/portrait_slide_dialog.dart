@@ -26,34 +26,37 @@ Future<void> portraitSlideDialog(BuildContext context) async {
                   contentPadding: EdgeInsets.symmetric(horizontal: 24),
                   leading: Icon(Icons.swipe_up_outlined),
                   title: Text('竖屏视频全屏播放时'),
-                  subtitle: Text('上滑播放推荐的竖屏视频，下滑回到上一个视频'),
+                  subtitle: Text('上滑播放推荐的竖屏视频，下滑回到上一个视频，播完自动上滑'),
                 ),
                 SetSwitchItem(
-                  title: '推荐来源使用首页推荐',
+                  title: '使用首页推荐',
                   subtitle: Pref.portraitRC
-                      ? '当前：首页推荐（可刷到的视频可能变少）'
-                      : '当前：当前视频的相关推荐',
+                      ? '当前：首页推荐（和官方一致，一直刷不完）'
+                      : '当前：当前视频的相关推荐，用完后自动接首页推荐',
                   setKey: SettingBoxKey.portraitRC,
-                  defaultVal: false,
+                  defaultVal: true,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 24),
                   onChanged: (_) => setState(() {}),
                 ),
                 SetSwitchItem(
                   title: '随机视频',
                   subtitle: Pref.portraitRandom
-                      ? '当前：从推荐池里随机挑一个竖屏视频'
+                      ? '当前：从候选池里随机挑一个竖屏视频'
                       : '当前：按推荐顺序依次刷',
                   setKey: SettingBoxKey.portraitRandom,
                   defaultVal: false,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 24),
                   onChanged: (_) => setState(() {}),
                 ),
-                const SetSwitchItem(
-                  title: '刷新推荐',
-                  subtitle: '没有更多竖屏视频时，重新取一次推荐',
+                SetSwitchItem(
+                  title: '自动续取推荐',
+                  subtitle: Pref.portraitNewv
+                      ? '当前：没刷出竖屏视频时自动取下一页推荐'
+                      : '当前：只在已经取到的推荐里找，找完就停',
                   setKey: SettingBoxKey.portraitNewv,
-                  defaultVal: false,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 24),
+                  defaultVal: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+                  onChanged: (_) => setState(() {}),
                 ),
               ],
             ),
@@ -63,8 +66,8 @@ Future<void> portraitSlideDialog(BuildContext context) async {
         actions: [
           TextButton(
             onPressed: () async {
-              await GStorage.setting.put(SettingBoxKey.portraitRC, false);
-              await GStorage.setting.put(SettingBoxKey.portraitNewv, false);
+              await GStorage.setting.put(SettingBoxKey.portraitRC, true);
+              await GStorage.setting.put(SettingBoxKey.portraitNewv, true);
               await GStorage.setting.put(SettingBoxKey.portraitRandom, false);
 
               setState(() => subtreeKey = UniqueKey());

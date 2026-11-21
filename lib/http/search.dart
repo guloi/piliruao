@@ -129,6 +129,8 @@ abstract final class SearchHttp {
     dynamic aid,
     dynamic bvid,
     int? part,
+    // 竖屏即刷探测尺寸时会批量调用，失败不该弹一屏 toast
+    bool toastError = true,
   }) async {
     final res = await Request().get(
       Api.ab2c,
@@ -145,7 +147,9 @@ abstract final class SearchHttp {
       }
       return null;
     } else {
-      SmartDialog.showToast("ab2c error: ${res.data['message']}");
+      if (toastError) {
+        SmartDialog.showToast("ab2c error: ${res.data['message']}");
+      }
       return null;
     }
   }

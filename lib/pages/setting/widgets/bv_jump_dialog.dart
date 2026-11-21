@@ -118,7 +118,7 @@ class _BvSwitchDialogState extends State<_BvSwitchDialog> {
                     onChanged: (_) => setState(() {}),
                   ),
                   const SetSwitchItem(
-                    title: '允许AV号',
+                    title: '允许Av',
                     subtitle: '允许跳转av号',
                     setKey: SettingBoxKey.allowAv,
                     defaultVal: true,
