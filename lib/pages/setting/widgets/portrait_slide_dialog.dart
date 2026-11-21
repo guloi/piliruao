@@ -32,7 +32,7 @@ Future<void> portraitSlideDialog(BuildContext context) async {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 0, 24, 6),
                   child: Text(
-                    PortraitFeedService.instance.stats.summary,
+                    PortraitFeedService.instance.statsSummary,
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),

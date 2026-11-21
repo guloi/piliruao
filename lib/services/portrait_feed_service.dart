@@ -41,10 +41,17 @@ class PortraitFeedItem {
 
 /// 取流统计：设置页会把最近一次的结果显示出来，方便看清到底是「推荐池里
 /// 本来就没有竖屏」还是「尺寸探测没成功」才刷不出视频
+/// 统计是累计的，不按单次取流清零：单次取流大多是「池子里直接有货」的
+/// 0 请求命中，按次看全零反而看不出问题
 class PortraitFeedStats {
-  /// App 端推荐池返回多少条、其中判为竖屏多少条
+  /// App 端推荐池累计返回多少条、其中判为竖屏多少条
   int appItems = 0;
   int appVerticals = 0;
+
+  /// App 条目里带「竖屏」推荐标记的条数、uri 上直接带画面尺寸的条数
+  /// （两者就是「零请求判竖屏」的全部依据，看这两个数就知道能不能白捧）
+  int appMarked = 0;
+  int appSized = 0;
 
   /// Web 端推荐池
   int webItems = 0;
@@ -58,29 +65,12 @@ class PortraitFeedStats {
   int probes = 0;
   int probeFailed = 0;
 
-  /// 最近一次取流有没有找到东西、有没有用过「刷新推荐」这招兜底
-  bool found = false;
+  /// 取流次数与空手而归的次数
+  int searches = 0;
+  int misses = 0;
+
+  /// 有没有用过「刷新推荐」这招兜底
   bool refreshed = false;
-
-  void reset() {
-    appItems = 0;
-    appVerticals = 0;
-    webItems = 0;
-    webVerticals = 0;
-    relatedItems = 0;
-    relatedVerticals = 0;
-    probes = 0;
-    probeFailed = 0;
-    found = false;
-    refreshed = false;
-  }
-
-  String get summary => '上次取流：App ${appItems}条/竖屏$appVerticals'
-      '，Web ${webItems}条/竖屏$webVerticals'
-      '，相关 ${relatedItems}条/竖屏$relatedVerticals'
-      '，探测 $probes 条（失败 $probeFailed）'
-      '${refreshed ? '，刷过推荐' : ''}'
-      '${found ? '' : '，没找到竖屏'}';
 }
 
 /// 竖屏即刷的取流：
@@ -106,8 +96,10 @@ class PortraitFeedService {
   /// 一次上滑最多同时探测几条候选
   static const int _probeConcurrency = 6;
 
-  /// 一次上滑最多探测几条候选，超过就把剩下的留给下次上滑
-  static const int _maxProbe = 48;
+  /// 一次上滑最多探测几条候选，超过就把剩下的留给下次上滑。
+  /// 不往高了调：pagelist 请求发太密容易被风控，而且短时长优先后
+  /// 24 条的命中率已经足够高
+  static const int _maxProbe = 24;
 
   /// 一次上滑的探测时间预算，超时先返回，下次上滑接着找
   static const Duration _probeBudget = Duration(seconds: 5);
@@ -226,8 +218,43 @@ class PortraitFeedService {
             _prefetchFuture = null;
             _prefetchingFor = null;
           }
+          _warmQueue(currentBvid);
         });
     _prefetchFuture = future;
+  }
+
+  /// 后台把候选池垫厚一点：连着上滑的时候池子里总有现货，不用每次都等网络
+  static const int _warmTarget = 4;
+
+  Future<void>? _warmFuture;
+
+  void _warmQueue(String currentBvid) {
+    if (_warmFuture != null) return;
+    if (_queue.where((e) => e.isVertical).length >= _warmTarget) return;
+    late final Future<void> future;
+    future = _doWarm(currentBvid).catchError((Object _) {}).whenComplete(() {
+      if (identical(_warmFuture, future)) {
+        _warmFuture = null;
+      }
+    });
+    _warmFuture = future;
+  }
+
+  Future<void> _doWarm(String currentBvid) async {
+    for (int i = 0; i < _warmTarget; i++) {
+      if (_cursor != null && _cursor != currentBvid) {
+        return;
+      }
+      if (_queue.where((e) => e.isVertical).length >= _warmTarget) {
+        return;
+      }
+      final item = await _findNext(currentBvid);
+      if (item == null) {
+        return;
+      }
+      // 已经拿到的现货放回池子，下次上滑就不用再发请求
+      _add(item);
+    }
   }
 
   PortraitFeedItem? _takePrefetched(String currentBvid) {
@@ -267,81 +294,92 @@ class PortraitFeedService {
   Future<PortraitFeedItem?> _findNext(String currentBvid) async {
     // 关掉「自动续取推荐」就只允许取一页，否则一直往后翻，刷不完
     final int maxPages = Pref.portraitNewv ? _maxPages : 1;
-    final Stopwatch stopwatch = Stopwatch()..start();
+    stats.searches++;
     int probes = 0;
-    int pages = 0;
+
+    // 池子里已经有确认竖屏的，直接给，一个请求都不用发
+    final ready = _takeVertical(currentBvid);
+    if (ready != null) {
+      return ready;
+    }
+
+    // 关掉「使用首页推荐」时先吃当前视频的相关推荐
+    bool relatedTried = false;
+    if (!Pref.portraitRC) {
+      relatedTried = true;
+      await _fillRelated(currentBvid);
+      final related = _takeVertical(currentBvid);
+      if (related != null) {
+        return related;
+      }
+    }
+
+    final int itemsBefore = stats.appItems + stats.webItems;
     bool refreshed = false;
-    // 关掉「使用首页推荐」时先用当前视频的相关推荐，用完后自动接首页推荐
-    bool relatedFirst = !Pref.portraitRC;
-    bool relatedUsed = !Pref.portraitRC;
-    stats.reset();
 
-    void done(bool found) {
-      stats
-        ..probes = probes
-        ..found = found;
+    // 先把首页推荐池往下翻：能白捡到竖屏，就别花探测名额。翻到某一页
+    // 有竖屏立刻返回，不会为了「多备点货」把网络全占住
+    for (int page = 0; page < maxPages; page++) {
+      await _fillHomeRcmd();
+      final item = _takeVertical(currentBvid);
+      if (item != null) {
+        return item;
+      }
     }
 
-    while (true) {
-      // 池子里已经确认竖屏的，直接给，不用等网络
-      final vertical = _takeVertical(currentBvid);
-      if (vertical != null) {
-        done(true);
-        return vertical;
-      }
-
-      if (probes < _maxProbe && stopwatch.elapsed < _probeBudget) {
-        final batch = _takeUnknown(
-          currentBvid,
-          min(_probeConcurrency, _maxProbe - probes),
-        );
-        if (batch.isNotEmpty) {
-          probes += batch.length;
-          final hit = await _probe(batch);
-          if (hit != null) {
-            done(true);
-            return hit;
-          }
-          continue;
-        }
-      } else {
-        // 探测名额用完：池子里还有候选就留给下次上滑，别急着喊「没有更多」
-        done(false);
-        return null;
-      }
-
-      if (pages >= maxPages) {
-        // 分页走到底还是一条竖屏都没找着：把推荐流刷一遍（官方客户端
-        // 下拉刷新后又是一批新的），别直接说「没有更多」
-        if (!refreshed) {
-          refreshed = true;
-          stats.refreshed = true;
-          pages = 0;
-          _appIdx = 0;
-          _webIdx = 0;
-          await _fillHomeRcmd();
-          continue;
-        }
-        done(false);
-        return null;
-      }
-      pages++;
-      if (relatedFirst) {
-        relatedFirst = false;
-        await _fillRelated(currentBvid);
-        continue;
-      }
-      final int added = await _fillHomeRcmd();
-      // 首页池里没有竖屏（或者压根拿不到东西）时，顺手问问当前视频的相关
-      // 推荐：同一个 UP / 同一类内容的竖屏比例高得多
-      if ((added == 0 || !_hasVertical()) && !relatedUsed) {
-        relatedUsed = true;
-        await _fillRelated(currentBvid);
+    // 翻到底还是一条竖屏都没有：把推荐流刷新一次（等价官方下拉刷新）
+    if (!refreshed) {
+      refreshed = true;
+      stats.refreshed = true;
+      _appIdx = 0;
+      _webIdx = 0;
+      await _fillHomeRcmd();
+      final item = _takeVertical(currentBvid);
+      if (item != null) {
+        return item;
       }
     }
+
+    // 再退一步：池子里尺寸未知的候选并发探测（短视频优先，不会试几条就放弃）
+    // 探测预算从翻完页才开始算，否则翻页把时间吃光就一条都探不了了
+    final Stopwatch probeWatch = Stopwatch()..start();
+    while (probes < _maxProbe && probeWatch.elapsed < _probeBudget) {
+      final batch = _takeUnknown(
+        currentBvid,
+        min(_probeConcurrency, _maxProbe - probes),
+      );
+      if (batch.isEmpty) {
+        break;
+      }
+      probes += batch.length;
+      final hit = await _probe(batch);
+      if (hit != null) {
+        return hit;
+      }
+    }
+
+    // 首页推荐一条都没拿到（未登录被拦、风控等）才退回相关推荐，
+    // 正常情况不用它，免得给你刷一屏「全是当前视频同款」的内容
+    if (!relatedTried && stats.appItems + stats.webItems == itemsBefore) {
+      await _fillRelated(currentBvid);
+      final related = _takeVertical(currentBvid);
+      if (related != null) {
+        return related;
+      }
+    }
+
+    stats.misses++;
+    return null;
   }
 
-  bool _hasVertical() => _queue.any((e) => e.isVertical);
+  /// 给设置页看的累计统计（单次取流大多是 0 请求命中，按次看反而全是 0）
+  String get statsSummary => '累计：App ${stats.appItems}条/竖屏${stats.appVerticals}'
+      '（标记${stats.appMarked}/带尺寸${stats.appSized}）'
+      '，Web ${stats.webItems}条/竖屏${stats.webVerticals}'
+      '，相关 ${stats.relatedItems}条/竖屏${stats.relatedVerticals}'
+      '，探测 ${stats.probes} 条（失败 ${stats.probeFailed}）'
+      '，取流 ${stats.searches} 次/落空 ${stats.misses} 次'
+      '，池内 ${_queue.length} 条';
 
   /// 清掉不能用的候选：当前视频、历史里播过的、已确认横屏的、拉黑过的
   void _purge(String currentBvid) {
@@ -414,6 +452,7 @@ class PortraitFeedService {
 
   /// 并发探测一批候选，返回其中第一条竖屏视频
   Future<PortraitFeedItem?> _probe(List<PortraitFeedItem> batch) async {
+    stats.probes += batch.length;
     final results = await Future.wait(batch.map(_ensureVertical));
     PortraitFeedItem? hit;
     for (int i = 0; i < batch.length; i++) {
@@ -502,9 +541,11 @@ class PortraitFeedService {
 
   Future<int> _doFillHomeRcmd() async {
     // 先吃 App 端推荐池：条目自带竖屏标记，绝大多数候选零成本就能判尺寸
+    final int itemsBefore = stats.appItems;
     int added = await _doFillAppRcmd();
-    if (added == 0) {
-      added = await _doFillWebRcmd();
+    // App 池一条都没拿到才去问 Web 池（Web 池几乎全是横屏，只能靠探测）
+    if (stats.appItems == itemsBefore) {
+      added = await _doFillWebRcmd() + added;
     }
     return added;
   }
@@ -517,9 +558,18 @@ class PortraitFeedService {
       if (res case Success(:final response)) {
         _appIdx++;
         int verticals = 0;
+        int marked = 0;
+        int sized = 0;
         for (final e in response) {
           if (e.goto != 'av') {
             continue;
+          }
+          if (e.portrait) {
+            marked++;
+          }
+          final dimension = _dimensionFromUri(e.uri);
+          if (dimension != null) {
+            sized++;
           }
           final item = PortraitFeedItem(
             bvid: e.bvid ?? '',
@@ -528,7 +578,7 @@ class PortraitFeedService {
             cover: e.cover,
             title: e.title,
             duration: e.duration,
-            dimension: _dimensionFromUri(e.uri),
+            dimension: dimension,
             vertical: e.portrait ? true : null,
           );
           if (item.isVertical) {
@@ -540,7 +590,9 @@ class PortraitFeedService {
         }
         stats
           ..appItems += response.length
-          ..appVerticals += verticals;
+          ..appVerticals += verticals
+          ..appMarked += marked
+          ..appSized += sized;
       }
     } catch (_) {}
     return added;
