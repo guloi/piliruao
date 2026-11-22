@@ -1894,35 +1894,6 @@ abstract final class Pref {
   static set jumpDirec(bool value) =>
       _setting.put(SettingBoxKey.jumpDirec, value);
 
-  static bool get portraitSlideVideo =>
-      _setting.get(SettingBoxKey.portraitSlideVideo,
-          defaultValue:false);
-
-  static set portraitSlideVideo(bool value) =>
-      _setting.put(SettingBoxKey.portraitSlideVideo, value);
-
-  static bool get portraitRC =>
-      _setting.get(SettingBoxKey.portraitRC,
-          defaultValue:true);
-
-  static set portraitRC(bool value) =>
-      _setting.put(SettingBoxKey.portraitRC, value);
-
-  static bool get portraitNewv =>
-      _setting.get(SettingBoxKey.portraitNewv,
-          defaultValue:true);
-
-  static set portraitNewv(bool value) =>
-      _setting.put(SettingBoxKey.portraitNewv, value);
-
-  static bool get portraitRandom =>
-      _setting.get(SettingBoxKey.portraitRandom,
-          defaultValue:false);
-
-  static set portraitRandom(bool value) =>
-      _setting.put(SettingBoxKey.portraitRandom, value);
-
-
   static String get bvJumpToastText =>
       _setting.get(SettingBoxKey.bvJumpToastText,
       defaultValue: "已到坐标~");

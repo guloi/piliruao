@@ -379,10 +379,6 @@ abstract final class SettingBoxKey {
       bvJumpWaitSec = 'bvJumpWaitSec',
       shouldJumpEveryTime = 'shouldJumpEveryTime',
       allowAv = 'allowAv';
-  static const String portraitSlideVideo = 'portraitSlideVideo',
-      portraitRC = 'portraitRC',
-      portraitNewv = 'portraitNewv',
-      portraitRandom = 'portraitRandom';
   static const String hdrDebug = 'hdrDebug';
 
   /// GitHub 设置同步：仓库（owner/repo）、分支、归档路径、Token、Pages 链接。

@@ -38,7 +38,6 @@ import 'package:get/get.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 import 'package:material_ui/material_ui.dart' hide RefreshIndicator;
 import 'package:PiliPlus/pages/setting/widgets/bv_jump_dialog.dart';
-import 'package:PiliPlus/pages/setting/widgets/portrait_slide_dialog.dart';
 
 List<SettingsModel> get extraSettings => [
   if (PlatformUtils.isDesktop) ...[
@@ -113,19 +112,6 @@ List<SettingsModel> get extraSettings => [
         setKey: SettingBoxKey.bvJump,
         defaultVal: false,
         onTap: showBvSwitchDialog,
-      ),
-    ),
-
-    const SplitModel(
-      normalModel: NormalModel.split(
-        title: '竖屏即刷',
-        subtitle: '竖屏视频全屏播放时，上滑刷下一个，下滑回上一个',
-        leading: Icon(Icons.height),
-      ),
-      switchModel: SwitchModel.split(
-        setKey: SettingBoxKey.portraitSlideVideo,
-        defaultVal: false,
-        onTap: portraitSlideDialog,
       ),
     ),
   ],

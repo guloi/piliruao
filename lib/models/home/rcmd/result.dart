@@ -13,9 +13,6 @@ class RcmdVideoItemAppModel extends BaseRcmdVideoItemModel {
   String? cardType;
   ThreePoint? threePoint;
 
-  /// 官方 App 会把竖屏视频的推荐原因写成「竖屏」，竖屏即刷靠它零成本判尺寸
-  bool portrait = false;
-
   RcmdVideoItemAppModel.fromJson(Map<String, dynamic> json) {
     aid = json['player_args']?['aid'] ?? parseIntOrNull(json['param']);
     bvid = json['bvid'] ?? IdUtils.av2bv(aid!);
@@ -28,7 +25,6 @@ class RcmdVideoItemAppModel extends BaseRcmdVideoItemModel {
     title = json['title'];
     goto = json['card_goto'];
     owner = RcmdOwner.fromJson(json, goto);
-    portrait = json['rcmd_reason'] == '竖屏';
     rcmdReason = json['rcmd_reason'];
     if (rcmdReason == '竖屏') rcmdReason = null;
     //     json['bottom_rcmd_reason'] ??

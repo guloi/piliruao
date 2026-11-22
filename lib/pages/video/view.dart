@@ -23,8 +23,6 @@ import 'package:PiliPlus/models/common/episode_panel_type.dart';
 import 'package:PiliPlus/models/common/list_order.dart';
 import 'package:PiliPlus/models/common/pgc_episode_type.dart';
 import 'package:PiliPlus/models_new/pgc/pgc_info_model/result.dart';
-import 'package:PiliPlus/models_new/video/video_detail/episode.dart'
-    show BaseEpisodeItem;
 import 'package:PiliPlus/models_new/video/video_tag/data.dart';
 import 'package:PiliPlus/pages/ai_chat/controller.dart';
 import 'package:PiliPlus/pages/ai_chat/view.dart';
@@ -67,7 +65,6 @@ import 'package:PiliPlus/services/live_pip_overlay_service.dart';
 import 'package:PiliPlus/services/logger.dart';
 import 'package:PiliPlus/services/pip_overlay_service.dart';
 import 'package:PiliPlus/services/pip_transition_coordinator.dart';
-import 'package:PiliPlus/services/portrait_feed_service.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show shutdownTimerService;
@@ -75,7 +72,6 @@ import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/extension/scroll_controller_ext.dart';
 import 'package:PiliPlus/utils/extension/theme_ext.dart';
-import 'package:PiliPlus/utils/feed_back.dart';
 import 'package:PiliPlus/utils/image_utils.dart';
 import 'package:PiliPlus/utils/max_screen_size.dart';
 import 'package:PiliPlus/utils/mobile_observer.dart';
@@ -161,170 +157,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
   bool get pipNoDanmaku =>
       videoDetailController.plPlayerController.pipNoDanmaku;
-
-  bool _portraitSliding = false;
-
-  bool get _portraitSlideSupported =>
-      Pref.portraitSlideVideo &&
-          PlatformUtils.isMobile &&
-          videoDetailController.isUgc;
-
-  bool get _isPortraitVideo {
-    final ctr = videoDetailController.plPlayerController;
-    final int? w = ctr.width;
-    final int? h = ctr.height;
-    if (w != null && h != null && w > 0 && h > 0) {
-      return h > w;
-    }
-    return videoDetailController.isVertical.value;
-  }
-
-  bool get _portraitSlideMode =>
-      _portraitSlideSupported && _isPortraitVideo;
-
-  bool get _portraitSlideActive =>
-      _portraitSlideMode && isPortrait && isFullScreen;
-
-  PortraitFeedItem get _currentFeedItem => PortraitFeedItem(
-    bvid: videoDetailController.bvid,
-    cid: videoDetailController.cid.value,
-    aid: videoDetailController.aid,
-    cover: videoDetailController.cover.value,
-    title: ugcIntroController.videoDetail.value.title,
-  );
-
-  void _setupPortraitSlide() {
-    if (!Pref.portraitSlideVideo) {
-      // 关闭开关后丢掉整条推荐流，重新开启时从当前视频重新取
-      PortraitFeedService.instance.reset();
-      return;
-    }
-    if (!_portraitSlideSupported) {
-      return;
-    }
-    PortraitFeedService.instance.visit(videoDetailController.bvid);
-    videoDetailController.plPlayerController
-      ..onPortraitSlideEnabled = _enablePortraitSlide
-      ..onPortraitSlideUp = _portraitSlideNext
-      ..onPortraitSlideDown = _portraitSlidePrev;
-    _preloadPortraitFeed();
-  }
-
-  /// 后台预取下一个视频，上滑时就能立刻出画；失败则等真正上滑时再取。
-  /// 只在竖屏全屏「上滑即刷」真正生效时预取：打开详情页、从链接/剪切板
-  /// 跳转视频时不再顺带发后台请求，免得和详情页抢请求配额、跳出网络异常
-  void _preloadPortraitFeed() {
-    if (!_portraitSlideSupported || !_portraitSlideActive) {
-      return;
-    }
-    // 新页面（链接/剪切板跳转）刚进详情、播放器还没就绪时不预取：
-    // 详情/分P请求优先，预取等视频真正出画后再来
-    if (!videoDetailController.videoState.value ||
-        videoDetailController.isQuerying) {
-      return;
-    }
-    final String bvid = videoDetailController.bvid;
-    if (bvid.isEmpty) {
-      return;
-    }
-    PortraitFeedService.instance.preloadNext(currentBvid: bvid);
-  }
-
-  bool _enablePortraitSlide() {
-    final bool enabled = _portraitSlideMode;
-    // 进入竖屏全屏、手势真正可用时才预取；半屏浏览/跳转页面不预取
-    if (enabled) {
-      _preloadPortraitFeed();
-    }
-    return enabled;
-  }
-
-  void _disposePortraitSlide() {
-    final ctr = videoDetailController.plPlayerController;
-    if (ctr.onPortraitSlideUp == _portraitSlideNext) {
-      ctr
-        ..onPortraitSlideUp = null
-        ..onPortraitSlideDown = null
-        ..onPortraitSlideEnabled = null;
-    }
-  }
-
-  Future<bool> _switchPortraitFeed(PortraitFeedItem item) async {
-    PortraitFeedService.instance.markCursor(item);
-    return ugcIntroController.onChangeEpisode(
-      BaseEpisodeItem(
-        aid: item.aid,
-        bvid: item.bvid,
-        cid: item.cid,
-        title: item.title,
-        cover: item.cover,
-      ),
-      manual: true,
-    );
-  }
-
-  Future<bool> _portraitSlideNext([bool showToast = true]) async {
-    if (_portraitSliding || !_portraitSlideMode) {
-      return false;
-    }
-    _portraitSliding = true;
-    final service = PortraitFeedService.instance;
-    service.push(_currentFeedItem);
-    try {
-      final item = await service.next(currentBvid: videoDetailController.bvid);
-      if (item == null) {
-        // 没刷出新视频时把入栈的当前视频退回去，免得「下滑」回到的是自己
-        service.pop();
-        if (showToast) {
-          // 池子里还有候选就说明只是这一轮没试完，再滑一次接着找
-          SmartDialog.showToast(
-            service.hasPending ? '正在找竖屏视频，再滑一次试试' : '没有更多推荐视频了',
-          );
-        }
-        return false;
-      }
-      final ok = await _switchPortraitFeed(item);
-      if (!ok) {
-        service.pop();
-        if (showToast) {
-          SmartDialog.showToast('切换视频失败，请重试');
-        }
-        return false;
-      }
-      feedBack();
-      _preloadPortraitFeed();
-      return true;
-    } finally {
-      _portraitSliding = false;
-    }
-  }
-
-  Future<bool> _portraitSlidePrev() async {
-    if (_portraitSliding || !_portraitSlideMode) {
-      return false;
-    }
-    final service = PortraitFeedService.instance;
-    final item = service.pop();
-    if (item == null) {
-      SmartDialog.showToast('已经是第一个视频');
-      return false;
-    }
-    _portraitSliding = true;
-    try {
-      final ok = await _switchPortraitFeed(item);
-      if (!ok) {
-        // 切换失败就把上一个视频放回栈顶，再滑一次还能重试
-        service.push(item);
-        SmartDialog.showToast('切换视频失败，请重试');
-        return false;
-      }
-      feedBack();
-      _preloadPortraitFeed();
-      return true;
-    } finally {
-      _portraitSliding = false;
-    }
-  }
 
   bool isShowing = true;
 
@@ -668,8 +500,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     // 其后的重建不再挂这些 key（见 _ownedKey / plPlayer）
     videoDetailController.pageOwner = this;
 
-    _setupPortraitSlide();
-
     if (restoringFromPip) {
       plPlayerController = videoDetailController.plPlayerController;
       final wasPlaying = plPlayerController!.playerStatus.isPlaying;
@@ -901,14 +731,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         }
       } catch (_) {}
 
-      if (_portraitSlideActive &&
-          plPlayerController!.playRepeat != PlayRepeat.singleCycle) {
-        // 自动上滑失败时不弹 toast，交给下面的连播/循环逻辑兜底
-        if (await _portraitSlideNext(false)) {
-          return;
-        }
-      }
-
       bool exitFlag = true;
 
       /// 顺序播放 列表循环
@@ -1011,8 +833,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     plPlayerController
       ?..removeStatusLister(playerListener)
       ..removePositionListener(positionListener);
-
-    _disposePortraitSlide();
 
     // 从小窗展开的新页面会复用同一 controller 并重新绑定，只解绑指向本页的引用
     if (videoDetailController.onRequestInAppPip == _enterInAppPipManually) {
@@ -1313,8 +1133,6 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     // 返回本页后必须重新注册，否则进入全屏时会使用错误 controller 的数据。
     if (Platform.isAndroid || Platform.isIOS) {
       videoDetailController.setupFullScreenQualitySwitch();
-
-      _setupPortraitSlide();
     }
 
     plPlayerController
