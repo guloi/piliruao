@@ -93,19 +93,20 @@ class PortraitFeedService {
   /// 候选池上限，长时间挂着也不会无限堆
   static const int _maxQueue = 240;
 
-  /// 一次上滑最多同时探测几条候选
-  static const int _probeConcurrency = 6;
+  /// 一次上滑最多同时探测几条候选（并发高了下游 HTTP/2 连接会被压爆，
+  /// 其他页面就会报「网络异常」）
+  static const int _probeConcurrency = 3;
 
   /// 一次上滑最多探测几条候选，超过就把剩下的留给下次上滑。
-  /// 不往高了调：pagelist 请求发太密容易被风控，而且短时长优先后
-  /// 24 条的命中率已经足够高
-  static const int _maxProbe = 24;
+  /// 不能往高了调：这里每一条都是一次 pagelist 请求，打太密会把整个 App 的
+  /// 请求队列拖住（其他页面就会「网络异常」、跳转晚好几秒）
+  static const int _maxProbe = 8;
 
   /// 一次上滑的探测时间预算，超时先返回，下次上滑接着找
-  static const Duration _probeBudget = Duration(seconds: 5);
+  static const Duration _probeBudget = Duration(seconds: 4);
 
   /// 一次切换最多续取几页推荐（关掉「自动续取推荐」时只取一页）
-  static const int _maxPages = 6;
+  static const int _maxPages = 2;
 
   final List<PortraitFeedItem> _queue = [];
   final List<PortraitFeedItem> _history = [];
@@ -200,12 +201,15 @@ class PortraitFeedService {
   /// 后台预取 [currentBvid] 之后的视频：上滑时直接命中缓存，不必等网络和
   /// 竖屏探测。失败静默，真正切换时还会再试一次。
   void preloadNext({required String currentBvid}) {
+    // 用户还没真用过上滑就不在后台预取：正常看视频、点点卡片的时候
+    // 一条多余请求都不发，避免抢走其他页面（详情/跳转）的请求配额
+    if (!_activated) return;
     if (currentBvid.isEmpty) return;
     if (_prefetchedFor == currentBvid && _prefetched != null) return;
     if (_prefetchingFor == currentBvid && _prefetchFuture != null) return;
     _prefetchingFor = currentBvid;
     late final Future<void> future;
-    future = _findNext(currentBvid)
+    future = _findNext(currentBvid, cheap: true)
         .then((item) {
           if (item != null && _prefetchedFor != currentBvid) {
             _prefetched = item;
@@ -218,43 +222,31 @@ class PortraitFeedService {
             _prefetchFuture = null;
             _prefetchingFor = null;
           }
-          _warmQueue(currentBvid);
         });
     _prefetchFuture = future;
   }
 
-  /// 后台把候选池垫厚一点：连着上滑的时候池子里总有现货，不用每次都等网络
-  static const int _warmTarget = 4;
+  /// 全局单飞：任何时候只允许一个取流任务在跑。
+  /// 之前预取和上滑各跑一场，每个视频都能打出几十个请求，把整个 App 的
+  /// 请求队列拖满（其他页面「网络异常」、点按半天不跳转就是这个原因）。
+  /// 用户真的用过上滑之后才允许后台预取
+  bool _activated = false;
 
-  Future<void>? _warmFuture;
+  Future<PortraitFeedItem?>? _searchFuture;
 
-  void _warmQueue(String currentBvid) {
-    if (_warmFuture != null) return;
-    if (_queue.where((e) => e.isVertical).length >= _warmTarget) return;
-    late final Future<void> future;
-    future = _doWarm(currentBvid).catchError((Object _) {}).whenComplete(() {
-      if (identical(_warmFuture, future)) {
-        _warmFuture = null;
+  Future<PortraitFeedItem?> _search(String currentBvid) {
+    final pending = _searchFuture;
+    if (pending != null) {
+      return pending;
+    }
+    late final Future<PortraitFeedItem?> future;
+    future = _findNext(currentBvid).whenComplete(() {
+      if (identical(_searchFuture, future)) {
+        _searchFuture = null;
       }
     });
-    _warmFuture = future;
-  }
-
-  Future<void> _doWarm(String currentBvid) async {
-    for (int i = 0; i < _warmTarget; i++) {
-      if (_cursor != null && _cursor != currentBvid) {
-        return;
-      }
-      if (_queue.where((e) => e.isVertical).length >= _warmTarget) {
-        return;
-      }
-      final item = await _findNext(currentBvid);
-      if (item == null) {
-        return;
-      }
-      // 已经拿到的现货放回池子，下次上滑就不用再发请求
-      _add(item);
-    }
+    _searchFuture = future;
+    return future;
   }
 
   PortraitFeedItem? _takePrefetched(String currentBvid) {
@@ -280,6 +272,7 @@ class PortraitFeedService {
   }
 
   Future<PortraitFeedItem?> next({required String currentBvid}) async {
+    _activated = true;
     final pending = _prefetchFuture;
     if (pending != null && _prefetchingFor == currentBvid) {
       await pending;
@@ -288,12 +281,18 @@ class PortraitFeedService {
     if (cached != null) {
       return cached;
     }
-    return _findNext(currentBvid);
+    return _search(currentBvid);
   }
 
-  Future<PortraitFeedItem?> _findNext(String currentBvid) async {
+  /// [cheap] 为 true 是后台预取专用的廉价模式：只翻一页推荐、只捡白送的
+  /// 竖屏，绝不发 pagelist 探测。用户点卡片/跳转的时候后台不会有几十个
+  /// 请求抢配额，不会再出现「网络异常 + 5 秒后才跳转」。
+  Future<PortraitFeedItem?> _findNext(
+    String currentBvid, {
+    bool cheap = false,
+  }) async {
     // 关掉「自动续取推荐」就只允许取一页，否则一直往后翻，刷不完
-    final int maxPages = Pref.portraitNewv ? _maxPages : 1;
+    final int maxPages = cheap ? 1 : (Pref.portraitNewv ? _maxPages : 1);
     stats.searches++;
     int probes = 0;
 
@@ -328,7 +327,7 @@ class PortraitFeedService {
     }
 
     // 翻到底还是一条竖屏都没有：把推荐流刷新一次（等价官方下拉刷新）
-    if (!refreshed) {
+    if (!cheap && !refreshed) {
       refreshed = true;
       stats.refreshed = true;
       _appIdx = 0;
@@ -342,25 +341,29 @@ class PortraitFeedService {
 
     // 再退一步：池子里尺寸未知的候选并发探测（短视频优先，不会试几条就放弃）
     // 探测预算从翻完页才开始算，否则翻页把时间吃光就一条都探不了了
-    final Stopwatch probeWatch = Stopwatch()..start();
-    while (probes < _maxProbe && probeWatch.elapsed < _probeBudget) {
-      final batch = _takeUnknown(
-        currentBvid,
-        min(_probeConcurrency, _maxProbe - probes),
-      );
-      if (batch.isEmpty) {
-        break;
-      }
-      probes += batch.length;
-      final hit = await _probe(batch);
-      if (hit != null) {
-        return hit;
+    if (!cheap) {
+      final Stopwatch probeWatch = Stopwatch()..start();
+      while (probes < _maxProbe && probeWatch.elapsed < _probeBudget) {
+        final batch = _takeUnknown(
+          currentBvid,
+          min(_probeConcurrency, _maxProbe - probes),
+        );
+        if (batch.isEmpty) {
+          break;
+        }
+        probes += batch.length;
+        final hit = await _probe(batch);
+        if (hit != null) {
+          return hit;
+        }
       }
     }
 
     // 首页推荐一条都没拿到（未登录被拦、风控等）才退回相关推荐，
     // 正常情况不用它，免得给你刷一屏「全是当前视频同款」的内容
-    if (!relatedTried && stats.appItems + stats.webItems == itemsBefore) {
+    if (!cheap &&
+        !relatedTried &&
+        stats.appItems + stats.webItems == itemsBefore) {
       await _fillRelated(currentBvid);
       final related = _takeVertical(currentBvid);
       if (related != null) {
