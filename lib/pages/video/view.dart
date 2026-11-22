@@ -210,9 +210,17 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     _preloadPortraitFeed();
   }
 
-  /// 后台预取下一个视频，上滑时就能立刻出画；失败则等真正上滑时再取
+  /// 后台预取下一个视频，上滑时就能立刻出画；失败则等真正上滑时再取。
+  /// 只在竖屏全屏「上滑即刷」真正生效时预取：打开详情页、从链接/剪切板
+  /// 跳转视频时不再顺带发后台请求，免得和详情页抢请求配额、跳出网络异常
   void _preloadPortraitFeed() {
-    if (!_portraitSlideSupported) {
+    if (!_portraitSlideSupported || !_portraitSlideActive) {
+      return;
+    }
+    // 新页面（链接/剪切板跳转）刚进详情、播放器还没就绪时不预取：
+    // 详情/分P请求优先，预取等视频真正出画后再来
+    if (!videoDetailController.videoState.value ||
+        videoDetailController.isQuerying) {
       return;
     }
     final String bvid = videoDetailController.bvid;
@@ -222,7 +230,14 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     PortraitFeedService.instance.preloadNext(currentBvid: bvid);
   }
 
-  bool _enablePortraitSlide() => _portraitSlideMode;
+  bool _enablePortraitSlide() {
+    final bool enabled = _portraitSlideMode;
+    // 进入竖屏全屏、手势真正可用时才预取；半屏浏览/跳转页面不预取
+    if (enabled) {
+      _preloadPortraitFeed();
+    }
+    return enabled;
+  }
 
   void _disposePortraitSlide() {
     final ctr = videoDetailController.plPlayerController;

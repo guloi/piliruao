@@ -6,6 +6,7 @@ import 'package:PiliPlus/http/video.dart';
 import 'package:PiliPlus/models/model_hot_video_item.dart';
 import 'package:PiliPlus/models_new/video/video_detail/dimension.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
+import 'package:dio/dio.dart' show CancelToken;
 
 class PortraitFeedItem {
   PortraitFeedItem({
@@ -138,6 +139,30 @@ class PortraitFeedService {
   String? _prefetchingFor;
   Future<void>? _prefetchFuture;
 
+  /// 预取代次：切页/清空时递增，旧任务跑完后按代次丢弃结果
+  int _prefetchSeq = 0;
+
+  /// 后台取流共用的取消令牌：换页/点链接跳转时取消，别和详情请求抢连接
+  CancelToken _cancelToken = CancelToken();
+
+  void _cancelInFlight() {
+    if (!_cancelToken.isCancelled) {
+      _cancelToken.cancel('portrait feed aborted');
+    }
+    _cancelToken = CancelToken();
+    // 旧的分页/取流 future 已经作废，别让下一次取流继续等它们
+    _homeFuture = null;
+    _relatedFuture = null;
+    _searchFuture = null;
+    _searchFor = null;
+  }
+
+  /// 用户主动跳转（点链接、剪切板）前调用：立刻停掉后台探测/预取
+  void abortBackground() {
+    _cancelInFlight();
+    _dropPrefetch();
+  }
+
   String? get cursor => _cursor;
 
   int get historyLength => _history.length;
@@ -153,6 +178,8 @@ class PortraitFeedService {
     }
     final int index = _history.indexWhere((e) => e.bvid == bvid);
     if (index == -1) {
+      // 打开了另一个视频（链接/剪切板跳转）：旧视频的后台探测到此为止
+      _cancelInFlight();
       _queue.clear();
       _history.clear();
       _dropPrefetch();
@@ -183,6 +210,7 @@ class PortraitFeedService {
   void markCursor(PortraitFeedItem item) => _cursor = item.bvid;
 
   void clear() {
+    _cancelInFlight();
     _queue.clear();
     _history.clear();
     _rejected.clear();
@@ -201,16 +229,20 @@ class PortraitFeedService {
   /// 后台预取 [currentBvid] 之后的视频：上滑时直接命中缓存，不必等网络和
   /// 竖屏探测。失败静默，真正切换时还会再试一次。
   void preloadNext({required String currentBvid}) {
-    // 用户还没真用过上滑就不在后台预取：正常看视频、点点卡片的时候
-    // 一条多余请求都不发，避免抢走其他页面（详情/跳转）的请求配额
-    if (!_activated) return;
+    // 只在竖屏全屏真正可用时才会被调用（见 VideoDetailPageV._preloadPortraitFeed）：
+    // 打开视频详情页、点链接跳转时一条后台请求都不发，避免抢走详情/跳转的请求配额
     if (currentBvid.isEmpty) return;
     if (_prefetchedFor == currentBvid && _prefetched != null) return;
-    if (_prefetchingFor == currentBvid && _prefetchFuture != null) return;
+    // 预取也必须单飞：同一时间只允许一个后台任务。之前只按 bvid 去重，
+    // 换视频时旧预取还在跑、新页面又起一份，请求就会叠起来
+    if (_prefetchFuture != null) return;
+    final int seq = ++_prefetchSeq;
     _prefetchingFor = currentBvid;
     late final Future<void> future;
     future = _findNext(currentBvid, cheap: true)
         .then((item) {
+          // 页面已经切走（代次变了）就丢弃结果，别再往池子里塞旧视频
+          if (seq != _prefetchSeq) return;
           if (item != null && _prefetchedFor != currentBvid) {
             _prefetched = item;
             _prefetchedFor = currentBvid;
@@ -226,23 +258,28 @@ class PortraitFeedService {
     _prefetchFuture = future;
   }
 
-  /// 全局单飞：任何时候只允许一个取流任务在跑。
-  /// 之前预取和上滑各跑一场，每个视频都能打出几十个请求，把整个 App 的
-  /// 请求队列拖满（其他页面「网络异常」、点按半天不跳转就是这个原因）。
-  /// 用户真的用过上滑之后才允许后台预取
-  bool _activated = false;
-
   Future<PortraitFeedItem?>? _searchFuture;
+  String? _searchFor;
 
+  /// 取流单飞：同一个视频只跑一场。不同视频不能直接复用旧任务，
+  /// 否则会拿旧视频的结果去切换新页面（表现为点了链接却跳到别的视频）。
   Future<PortraitFeedItem?> _search(String currentBvid) {
     final pending = _searchFuture;
     if (pending != null) {
-      return pending;
+      if (_searchFor == currentBvid) {
+        return pending;
+      }
+      // 旧任务还在跑：等它结束再为当前视频取流，避免两场取流并发打请求
+      return pending
+          .catchError((Object _) => null)
+          .then((_) => _search(currentBvid));
     }
     late final Future<PortraitFeedItem?> future;
+    _searchFor = currentBvid;
     future = _findNext(currentBvid).whenComplete(() {
       if (identical(_searchFuture, future)) {
         _searchFuture = null;
+        _searchFor = null;
       }
     });
     _searchFuture = future;
@@ -265,14 +302,15 @@ class PortraitFeedService {
   }
 
   void _dropPrefetch() {
+    _prefetchSeq++;
     _prefetched = null;
     _prefetchedFor = null;
     _prefetchingFor = null;
-    _prefetchFuture = null;
+    // 注意不要置空 _prefetchFuture：它没有取消，置空后下一个页面会再起一份，
+    // 旧请求 + 新请求就叠成一场小风暴。让它自然跑完，结果按代次丢弃
   }
 
   Future<PortraitFeedItem?> next({required String currentBvid}) async {
-    _activated = true;
     final pending = _prefetchFuture;
     if (pending != null && _prefetchingFor == currentBvid) {
       await pending;
@@ -489,6 +527,8 @@ class PortraitFeedService {
         aid: item.aid,
         bvid: item.bvid,
         toastError: false,
+        silent: true,
+        cancelToken: _cancelToken,
       );
       final dimension = res?.dimension;
       if (res == null || dimension == null) {
@@ -557,7 +597,11 @@ class PortraitFeedService {
   Future<int> _doFillAppRcmd() async {
     int added = 0;
     try {
-      final res = await VideoHttp.rcmdVideoListApp(freshIdx: _appIdx);
+      final res = await VideoHttp.rcmdVideoListApp(
+        freshIdx: _appIdx,
+        silent: true,
+        cancelToken: _cancelToken,
+      );
       if (res case Success(:final response)) {
         _appIdx++;
         int verticals = 0;
@@ -604,7 +648,12 @@ class PortraitFeedService {
   Future<int> _doFillWebRcmd() async {
     int added = 0;
     try {
-      final res = await VideoHttp.rcmdVideoList(ps: 20, freshIdx: _webIdx);
+      final res = await VideoHttp.rcmdVideoList(
+        ps: 20,
+        freshIdx: _webIdx,
+        silent: true,
+        cancelToken: _cancelToken,
+      );
       if (res case Success(:final response)) {
         _webIdx++;
         int verticals = 0;
@@ -671,7 +720,11 @@ class PortraitFeedService {
   Future<int> _doFillRelated(String bvid) async {
     int added = 0;
     try {
-      final res = await VideoHttp.relatedVideoList(bvid: bvid);
+      final res = await VideoHttp.relatedVideoList(
+        bvid: bvid,
+        silent: true,
+        cancelToken: _cancelToken,
+      );
       if (res case Success(:final response)) {
         int verticals = 0;
         for (final HotVideoItemModel e

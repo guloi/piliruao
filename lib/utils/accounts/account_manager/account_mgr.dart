@@ -161,6 +161,11 @@ class AccountManager extends Interceptor {
   }
 
   static void toast(DioException err) {
+    // 后台任务（竖屏即刷的探测/预取等）自己会处理失败，别把「网络异常」
+    // 弹到用户脸上，否则跳转视频时看起来像是链接坏了
+    if (err.requestOptions.extra['silent'] == true) {
+      return;
+    }
     const skipShow = [
       'heartbeat',
       'history/report',

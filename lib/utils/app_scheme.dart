@@ -19,6 +19,7 @@ import 'package:PiliPlus/pages/live/view.dart';
 import 'package:PiliPlus/pages/rank/view.dart';
 import 'package:PiliPlus/pages/subscription_detail/view.dart';
 import 'package:PiliPlus/pages/video/reply_reply/view.dart';
+import 'package:PiliPlus/services/portrait_feed_service.dart';
 import 'package:PiliPlus/utils/bili_utils.dart';
 import 'package:PiliPlus/utils/desktop/window_controller.dart';
 import 'package:PiliPlus/utils/id_utils.dart';
@@ -112,6 +113,10 @@ abstract final class PiliScheme {
     int? oid,
   }) async {
     // if (kDebugMode) debugPrint('onAppLink: $uri');
+
+    // 任何链接跳转都是用户主动操作：先把竖屏即刷的后台探测停掉，
+    // 需要解析短链/分P时不会和几十个后台请求抢连接
+    PortraitFeedService.instance.abortBackground();
 
     final String scheme = uri.scheme;
     final String host = uri.host;
@@ -931,6 +936,9 @@ abstract final class PiliScheme {
     try {
       aid ??= IdUtils.bv2av(bvid!);
       bvid ??= IdUtils.av2bv(aid);
+      // 用户主动跳转优先：先停掉竖屏即刷在后台跑的探测/预取，
+      // 别让它们占着连接把这次 ab2c 拖到超时
+      PortraitFeedService.instance.abortBackground();
       if (showDialog) {
         SmartDialog.showLoading<dynamic>(msg: '获取中...');
       }
@@ -938,6 +946,8 @@ abstract final class PiliScheme {
         bvid: bvid,
         aid: aid,
         part: parseIntOrNull(part),
+        // 跳转失败由下面统一给一句人话，别把 ab2c/网络异常的技术报错弹给用户
+        toastError: false,
       );
       final cid = res?.cid;
       if (showDialog) {
@@ -955,6 +965,9 @@ abstract final class PiliScheme {
           rootRpId: rootRpId,
           secondRpId: secondRpId,
         );
+      } else {
+        // 取不到分P信息就明确说跳转失败，而不是静默什么都不发生
+        SmartDialog.showToast('视频链接打开失败，请检查网络后重试');
       }
     } catch (e) {
       SmartDialog.dismiss();

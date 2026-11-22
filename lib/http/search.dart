@@ -131,10 +131,17 @@ abstract final class SearchHttp {
     int? part,
     // 竖屏即刷探测尺寸时会批量调用，失败不该弹一屏 toast
     bool toastError = true,
+    // 后台探测：连 Dio 拦截器的「网络异常」提示也一并静音，避免链接跳转时
+    // 被后台请求的报错刷屏
+    bool silent = false,
+    // 竖屏即刷切页时取消还没发完的探测，别和链接/详情请求抢连接
+    CancelToken? cancelToken,
   }) async {
     final res = await Request().get(
       Api.ab2c,
       queryParameters: {'aid': ?aid, 'bvid': ?bvid},
+      options: silent ? Options(extra: const {'silent': true}) : null,
+      cancelToken: cancelToken,
     );
     if (res.data['code'] == 0) {
       if (res.data['data'] case List list) {

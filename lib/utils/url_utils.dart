@@ -17,7 +17,8 @@ abstract final class UrlUtils {
         options: Options(
           followRedirects: false,
           validateStatus: (status) => 200 <= status! && status < 400,
-          extra: {'account': AnonymousAccount()},
+          // 短链解析失败会走后面的兜底逻辑，不用再弹一条「网络异常」
+          extra: {'account': AnonymousAccount(), 'silent': true},
         ),
       );
       redirectUrl = response.headers['location']?.firstOrNull;

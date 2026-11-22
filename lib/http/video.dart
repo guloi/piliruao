@@ -60,6 +60,9 @@ abstract final class VideoHttp {
     required int ps,
     required int freshIdx,
     bool desktop = false,
+    // 竖屏即刷的后台取流：失败不要弹「网络异常」，交给调用方静默处理
+    bool silent = false,
+    CancelToken? cancelToken,
   }) async {
     final Map<String, Object> params;
     if (desktop) {
@@ -89,6 +92,8 @@ abstract final class VideoHttp {
     final res = await Request().get(
       Api.recommendListWeb,
       queryParameters: await WbiSign.makSign(params),
+      options: silent ? Options(extra: const {'silent': true}) : null,
+      cancelToken: cancelToken,
     );
     if (res.data['code'] == 0) {
       List<RcmdVideoItemModel> list = <RcmdVideoItemModel>[];
@@ -151,6 +156,9 @@ abstract final class VideoHttp {
   // 添加额外的loginState变量模拟未登录状态
   static Future<LoadingState<List<RcmdVideoItemAppModel>>> rcmdVideoListApp({
     required int freshIdx,
+    // 竖屏即刷的后台取流：失败不要弹「网络异常」，交给调用方静默处理
+    bool silent = false,
+    CancelToken? cancelToken,
   }) async {
     final params = {
       'build': 8430300,
@@ -198,7 +206,9 @@ abstract final class VideoHttp {
           'x-bili-aurora-zone': '',
           'bili-http-engine': 'cronet',
         },
+        extra: silent ? const {'silent': true} : null,
       ),
+      cancelToken: cancelToken,
     );
 
     if (res.data['code'] == 0) {
@@ -432,10 +442,15 @@ abstract final class VideoHttp {
   // 相关视频
   static Future<LoadingState<List<HotVideoItemModel>?>> relatedVideoList({
     required String bvid,
+    // 竖屏即刷的后台取流：失败不要弹「网络异常」，交给调用方静默处理
+    bool silent = false,
+    CancelToken? cancelToken,
   }) async {
     final res = await Request().get(
       Api.relatedList,
       queryParameters: {'bvid': bvid},
+      options: silent ? Options(extra: const {'silent': true}) : null,
+      cancelToken: cancelToken,
     );
     if (res.data['code'] == 0) {
       final items = (res.data['data'] as List?)
