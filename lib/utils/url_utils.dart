@@ -17,8 +17,6 @@ abstract final class UrlUtils {
         options: Options(
           followRedirects: false,
           validateStatus: (status) => 200 <= status! && status < 400,
-          // 短链只关心 Location，不需要压缩 body；避免空响应被标成 br/gzip
-          headers: {'accept-encoding': 'identity'},
           extra: {'account': AnonymousAccount()},
         ),
       );

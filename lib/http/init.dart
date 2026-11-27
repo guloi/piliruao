@@ -368,25 +368,11 @@ class Request {
   static List<int> responseBytesDecoder(
     List<int> responseBytes,
     Map<String, List<String>> headers,
-  ) {
-    // HEAD / 204 等空响应也可能带 content-encoding（b23 短链就是如此），
-    // 对空 body 解压会抛 "Corrupted Huffman code histogram"，进而让链接跳转
-    // 直接失败并弹网络异常。空 body 原样返回即可。
-    if (responseBytes.isEmpty) {
-      return responseBytes;
-    }
-    try {
-      return switch (headers['content-encoding']?.firstOrNull) {
-        'gzip' => gzip.convert(responseBytes),
-        'br' => brotli.convert(responseBytes),
-        _ => responseBytes,
-      };
-    } catch (_) {
-      // 代理/CDN 返回的头与实际内容不一致时，退回原始字节让上层去判断，
-      // 不要在解码层把整次请求判死
-      return responseBytes;
-    }
-  }
+  ) => switch (headers['content-encoding']?.firstOrNull) {
+    'gzip' => gzip.convert(responseBytes),
+    'br' => brotli.convert(responseBytes),
+    _ => responseBytes,
+  };
 
   static String _responseDecoder(
     List<int> responseBytes,
